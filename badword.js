@@ -329,7 +329,6 @@ const badWords = [
     "parachute", "parachuting", "monkey water",
     "overdose", "od", "fent od", " Narcan", "naloxone"
 ];
-];
 
 const badWordRegex = new RegExp(
     '\\b(' + badWords.map(word => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')\\b',
