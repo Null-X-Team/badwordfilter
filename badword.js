@@ -1,5 +1,7 @@
-const badWords = [
-    // Core swear words and variations
+// badword.js - Complete self-contained script (CSS + HTML + Filter Logic)
+
+// 1. Paste your bad words list into this array
+const badWords = [// Core swear words and variations
     "fuck", "fucking", "fucked", "fucker", "fuckers", "fuckoff", "fuckyou", "fuk", "fck",
     "shit", "shitty", "shitface", "shithead", "bullshit", "shits",
     "ass", "asshole", "assholes", "asshat", "asswipe", "dumbass",
@@ -329,23 +331,122 @@ const badWords = [
     "parachute", "parachuting", "monkey water",
     "overdose", "od", "fent od", " Narcan", "naloxone"
 ];
+// 2. Inject CSS Styles directly into <head>
+const modalStyles = `
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0, 0, 0, 0.5);
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+  }
+  .modal-overlay.show-modal {
+    display: flex;
+  }
+  .modal-content {
+    background: #ffffff;
+    padding: 24px;
+    border-radius: 8px;
+    text-align: center;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    max-width: 320px;
+    width: 90%;
+    font-family: system-ui, -apple-system, sans-serif;
+  }
+  .modal-content p {
+    margin: 0 0 16px 0;
+    color: #333333;
+    font-size: 16px;
+    line-height: 1.4;
+  }
+  .modal-content button {
+    padding: 8px 20px;
+    background-color: #007bff;
+    color: #ffffff;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .modal-content button:hover {
+    background-color: #0056b3;
+  }
+`;
 
-const badWordRegex = new RegExp(
-    '\\b(' + badWords.map(word => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')\\b',
-    'gi'
-);
+const styleTag = document.createElement('style');
+styleTag.textContent = modalStyles;
+document.head.appendChild(styleTag);
 
-function filterBadWords(message, replacement = '****') {
-    if (!message || typeof message !== 'string') return message;
-    
-    return message.replace(badWordRegex, replacement);
+// 3. Inject Modal DOM elements into <body>
+function injectModalHTML() {
+  if (document.getElementById('profanityModal')) return;
+
+  const modalOverlay = document.createElement('div');
+  modalOverlay.id = 'profanityModal';
+  modalOverlay.className = 'modal-overlay';
+  modalOverlay.innerHTML = `
+    <div class="modal-content">
+      <p>Please refrain from using inappropriate language.</p>
+      <button id="closeModalBtn">OK</button>
+    </div>
+  `;
+  document.body.appendChild(modalOverlay);
+
+  // Close button click handler
+  document.getElementById('closeModalBtn').addEventListener('click', () => {
+    modalOverlay.classList.remove('show-modal');
+  });
 }
 
-// Example usage:
-console.log(filterBadWords("Hey you fucking asshole, go to hell!")); 
-// Output: "Hey you **** ****, go to hell!"
+// Ensure DOM is populated before appending HTML
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', injectModalHTML);
+} else {
+  injectModalHTML();
+}
 
-console.log(filterBadWords("This is a nice message")); 
-// Output: "This is a nice message"
-// Add this at the very end of badword.js:
-window.filterBadWords = filterBadWords;
+// 4. Regex Pattern Construction
+// Sort by length (longest phrases first) to prevent sub-phrase misfires
+const sortedBadWords = badWords
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+
+const patternString = sortedBadWords
+    .map(phrase => {
+        const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return escaped.replace(/\s+/g, '\\s+');
+    })
+    .join('|');
+
+const badWordRegex = patternString 
+    ? new RegExp(`\\b(${patternString})\\b`, 'gi')
+    : null;
+
+// 5. Profanity Verification Function
+function containsBadWords(message) {
+    if (!message || typeof message !== 'string' || !badWordRegex) return false;
+    const normalizedMessage = message.trim().replace(/\s+/g, ' ');
+    badWordRegex.lastIndex = 0;
+    return badWordRegex.test(normalizedMessage);
+}
+
+// 6. Bind Listener to Input Element
+function attachFilterToInput(inputId) {
+    const inputField = document.getElementById(inputId);
+    if (!inputField) return;
+
+    inputField.addEventListener('change', () => {
+        const modal = document.getElementById('profanityModal');
+        if (containsBadWords(inputField.value)) {
+            if (modal) modal.classList.add('show-modal');
+            inputField.value = '';
+        }
+    });
+}
+
+// Expose functions globally
+window.containsBadWords = containsBadWords;
+window.attachFilterToInput = attachFilterToInput;
