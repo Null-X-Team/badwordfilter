@@ -1,5 +1,5 @@
 // badword.js — Foolproof Tamper-Proof Profanity Filter
-// Version: 4.0.0 (Forge Edition)
+// Version: 4.1 (Forge Edition)
 //
 // A self-contained, drop-in profanity filter that normalizes away
 // text tricks before matching: leetspeak, inserted spaces/punctuation,
@@ -13,6 +13,9 @@
 // - Multi-pass normalization (NFKD, diacritics, zero-width, leet, separators,
 //   short-token merging, repeated-character collapsing)
 // - Boundary-anchored regex matching (no false positives on "class", "grass")
+// - Context-aware mild words: "dumb", "stupid", "idiot" etc. only block
+//   when directed at a person ("you are dumb"), not in casual use
+//   ("that picture looks dumb")
 // - Tamper-proof: closure isolation, integrity check, frozen API
 // - Self-healing: MutationObserver re-attaches filter if removed
 // - Anti-debug: timing detection
@@ -42,6 +45,7 @@
 // SECRET OVERRIDE
 // =============================================================================
 // The ONLY way to disable the filter from dev tools is:
+//   window.__badwordOverride('FORGE-MASTER-2026')
 // Any other key string is rejected. Overwriting the function itself
 // does not disable the filter — the internal _disabled flag lives
 // in the closure and is only set by the original function.
@@ -60,6 +64,7 @@
 // 5. To attach to all inputs on a page:
 //      window.attachFilterToAllInputs()
 // 6. Secret override (dev tools only):
+//      window.__badwordOverride('FORGE-MASTER-2026')
 //
 // =============================================================================
 // NORMALIZATION PIPELINE
@@ -1222,9 +1227,6 @@
     "crack",
     "meth",
     "methamphetamine",
-    "speed",
-    "ice",
-    "crystal",
     "mdma",
     "ecstasy",
     "ecstacy",
@@ -1232,14 +1234,10 @@
     "mollys",
     "molley",
     "lsd",
-    "acid",
     "shrooms",
-    "mushrooms",
     "mushies",
     "ketamine",
     "ket",
-    "specialk",
-    "special k",
     "k-hole",
     "oxy",
     "oxycodone",
@@ -1255,7 +1253,6 @@
     "xans",
     "xanax bar",
     "xanny",
-    "bars",
     "benzo",
     "benzodiazepine",
     "adderall",
@@ -1267,10 +1264,8 @@
     "fentalogues",
     "tramadol",
     "codeine",
-    "lean",
     "purple drank",
     "sizzurp",
-    "syrup",
     "cough syrup",
     "promethazine",
     "opioid",
@@ -1297,37 +1292,22 @@
     "blazed",
     "stoned",
     "baked",
-    "tripping",
-    "trip",
-    "rolling",
     "geeked",
     "zooted",
     "tweaking",
     "fiend",
     "junkie",
-    "dope",
     "dopehead",
-    "snow",
-    "blow",
     "yayo",
-    "white",
-    "skunk",
     "dabs",
-    "wax",
     "shatter",
-    "oil",
     "edibles",
-    "cart",
-    "vape",
     "thc",
     "cbd",
     "thca",
     "thc-a",
-    "smack",
     "china white",
     "black tar",
-    "boy",
-    "horse",
     "speedball",
     "crackhead",
     "methhead",
@@ -1382,7 +1362,6 @@
     "dextromethorphan",
     "robotripping",
     "ccc",
-    "benadryl",
     "dph",
     "deliriants",
     "delta 8",
@@ -1414,7 +1393,6 @@
     "blues",
     "m30s",
     "dilaudid",
-    "china",
     "subs",
     "bupe",
     "methadone",
@@ -1446,14 +1424,9 @@
     "drunk",
     "wasted",
     "hammered",
-    "rush",
     "jungle juice",
-    "nod",
-    "nodding",
     "nod out",
-    "zombie",
     "perched",
-    "roll",
     "molly roll",
     "acid trip",
     "bad trip",
@@ -1469,12 +1442,8 @@
     "naloxone",
     "gethigh",
     "gettinghigh",
-    "snort",
     "snorting",
     "shootup",
-    "inject",
-    "shooting",
-    "popping",
     "smokingweed",
     "poppills",
     "poppingpills",
@@ -3844,6 +3813,25 @@
     return s;
   }
 
+  // Same pipeline as normalize() but WITHOUT merging short token runs —
+  // keeps "u so dumb" as separate tokens so the insult-context walk can
+  // see the second-person target.
+  function normalizeContext(text, leet) {
+    var s = String(text || '').toLowerCase();
+    if (s.normalize) {
+      s = s.normalize('NFKD');
+    }
+    s = stripDiacritics(s);
+    s = removeZeroWidth(s);
+    if (leet) {
+      s = applyLeetMap(s);
+    }
+    s = stripNonAlpha(s, !leet);
+    s = collapseSpaces(s);
+    s = collapseRepeats(s);
+    return s;
+  }
+
   // ===========================================================================
   // REGEX BUILDER
   // ===========================================================================
@@ -3886,7 +3874,9 @@
     var hasWords = false;
     for (var i = 0; i < badWords.length; i++) {
       var n = normalize(badWords[i], leet);
-      if (n.length >= 2) {
+      // Mild words are excluded here — they only trigger through the
+      // insult-context check below, so casual usage is allowed
+      if (n.length >= 2 && !mildLookup[n]) {
         set[n] = true;
         hasWords = true;
       }
@@ -3912,6 +3902,118 @@
       pattern += escapeRegex(words[j]);
     }
     return new RegExp('(?:^| )(?:' + pattern + ')(?: |$)');
+  }
+
+  // ===========================================================================
+  // CONTEXT-AWARE MILD WORDS
+  // ===========================================================================
+  // Casual words like "dumb", "stupid", "idiot" or "crazy" appear constantly
+  // in normal chat ("that picture looks dumb") and hard-blocking them makes
+  // a filter unusable. They are excluded from the hard-block regexes above
+  // and only trigger when DIRECTED AT A PERSON: a second-person target
+  // ("you", "u", "ur", "youre", "your") connected to the mild word through
+  // filler words ("are", "so", "such", "look", "like", ...) within a few
+  // tokens. Negations ("you arent dumb") cancel the insult.
+  //
+  //   "that picture looks dumb"    -> casual, ALLOWED
+  //   "can you believe how dumb"   -> casual, ALLOWED
+  //   "you are so dumb"            -> insult, BLOCKED
+  //   "youre such an idiot"        -> insult, BLOCKED
+  //   "ur dumb"                    -> insult, BLOCKED
+  // ===========================================================================
+
+  var mildWords = [
+    'dumb', 'dumbo', 'dumbos', 'dummy', 'dummies', 'stupid', 'idiot',
+    'idiots', 'idiotic', 'imbecile', 'imbeciles', 'moron', 'morons',
+    'moronic', 'cretin', 'cretins', 'simpleton', 'halfwit', 'dimwit',
+    'nitwit', 'feebleminded', 'crazy', 'crazies', 'psycho', 'psychos',
+    'lunatic', 'lunatics', 'loony', 'loon', 'nutjob', 'nutjobs', 'lame',
+    'lamo', 'weirdo', 'weirdos', 'jerk', 'jerks', 'loser', 'losers',
+    'fool', 'fools', 'clown', 'clowns', 'brat', 'brats', 'pig', 'pigs'
+  ];
+
+  var contextTargets = {
+    'you': true, 'u': true, 'ur': true, 'ure': true, 'youre': true,
+    'your': true, 'yours': true, 'yourself': true, 'ya': true
+  };
+
+  var contextFillers = {
+    'are': true, 'is': true, 'r': true, 're': true, 'was': true, 'were': true,
+    'be': true, 'being': true, 'been': true, 'so': true, 'very': true,
+    'really': true, 'such': true, 'a': true, 'an': true, 'the': true,
+    'this': true, 'that': true, 'these': true, 'those': true, 'all': true,
+    'guys': true, 'look': true, 'looks': true, 'looking': true,
+    'like': true, 'acting': true, 'act': true, 'just': true,
+    'literally': true, 'kinda': true, 'kind': true, 'of': true,
+    'little': true, 'mad': true, 'still': true, 'always': true
+  };
+
+  var contextNegations = {
+    'not': true, 'no': true, 'never': true, 'isnt': true, 'arent': true,
+    'aint': true, 'dont': true, 'doesnt': true, 'wasnt': true,
+    'werent': true
+  };
+
+  // collapseRepeats can alter words before the walk ("look" -> "lok"),
+  // so register collapsed variants of every context word
+  (function () {
+    var sets = [contextTargets, contextFillers, contextNegations];
+    for (var si = 0; si < sets.length; si++) {
+      var keys = [];
+      var key;
+      for (key in sets[si]) {
+        if (sets[si].hasOwnProperty(key)) {
+          keys.push(key);
+        }
+      }
+      for (var ki = 0; ki < keys.length; ki++) {
+        sets[si][collapseRepeats(keys[ki])] = true;
+      }
+    }
+  })();
+
+  // Normalized lookup of every mild word (raw + leet forms)
+  var mildLookup = {};
+  var miw;
+  for (miw = 0; miw < mildWords.length; miw++) {
+    mildLookup[normalize(mildWords[miw], false)] = true;
+    mildLookup[normalize(mildWords[miw], true)] = true;
+  }
+
+  // Walks backwards from a mild word looking for a second-person target.
+  // Negation words cancel the insult; unknown words end the walk.
+  function isInsultContext(tokens, idx) {
+    var stop = idx - 6;
+    if (stop < 0) {
+      stop = 0;
+    }
+    for (var i = idx - 1; i >= stop; i--) {
+      var t = tokens[i];
+      if (contextNegations[t]) {
+        return false;
+      }
+      if (contextTargets[t]) {
+        return true;
+      }
+      if (!contextFillers[t]) {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  // Scans the normalized token stream for mild words aimed at a person
+  function hasContextualInsult(normalizedText) {
+    if (!normalizedText) {
+      return false;
+    }
+    var tokens = normalizedText.split(' ');
+    for (var i = 0; i < tokens.length; i++) {
+      if (mildLookup[tokens[i]] && isInsultContext(tokens, i)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   // Built once at load time and kept private — the console cannot reach,
@@ -3940,6 +4042,15 @@
     if (leetRegex && leetRegex.test(leet)) {
       return true;
     }
+
+    // Contextual check: mild words only block when aimed at a person
+    if (hasContextualInsult(normalizeContext(message, false))) {
+      return true;
+    }
+    if (hasContextualInsult(normalizeContext(message, true))) {
+      return true;
+    }
+
     return false;
   }
 
