@@ -1,5 +1,5 @@
 // badword.js — Foolproof Tamper-Proof Profanity Filter
-// Version: 4.1 (Forge Edition)
+// Version: 4.2 (Forge Edition)
 //
 // A self-contained, drop-in profanity filter that normalizes away
 // text tricks before matching: leetspeak, inserted spaces/punctuation,
@@ -16,8 +16,12 @@
 // - Context-aware mild words: "dumb", "stupid", "idiot" etc. only block
 //   when directed at a person ("you are dumb"), not in casual use
 //   ("that picture looks dumb")
+// - Report-based learning: badwordReport(text) sends the unknown words of
+//   a flagged message to your report endpoint (set with
+//   badwordSetReportUrl(url)); once enough reports confirm a word it is
+//   added to the master list. Nothing is stored in the browser.
 // - Tamper-proof: closure isolation, integrity check, frozen API
-// - Self-healing: MutationObserver re-attaches filter if removed
+// - Self-healing: send guards re-attached every 1.5s if removed
 // - Anti-debug: timing detection
 // - Secret override: single hidden command to disable
 //
@@ -37,15 +41,14 @@
 // modifies the array (e.g., emptying it via dev tools), the filter
 // detects the tampering and rebuilds from an internal backup.
 //
-// A MutationObserver watches the DOM for new inputs and re-attaches
-// the filter. If someone removes an event listener, the observer
-// re-adds it on the next mutation cycle.
+// The send guards are attached to the document in the capture phase, so
+// dynamically added fields are covered automatically. If someone
+// removes a guard listener, the heal tick re-adds it.
 //
 // =============================================================================
 // SECRET OVERRIDE
 // =============================================================================
 // The ONLY way to disable the filter from dev tools is:
-//   window.__badwordOverride('FORGE-MASTER-2026')
 // Any other key string is rejected. Overwriting the function itself
 // does not disable the filter — the internal _disabled flag lives
 // in the closure and is only set by the original function.
@@ -55,8 +58,9 @@
 // =============================================================================
 // 1. Include this script on your page:  <script src="badword.js"></script>
 // 2. All text inputs, textareas, and contenteditable elements are
-//    automatically filtered. Typing a bad word shows a warning modal
-//    and clears the field.
+//    checked WHEN THE MESSAGE IS SENT (form submit or Enter), never
+//    while typing. Bad content shows a warning modal and the send is
+//    blocked — so typing normal words is never interrupted.
 // 3. To manually check text:
 //      window.containsBadWords("some text")  ->  true / false
 // 4. To attach to a specific input:
@@ -64,7 +68,6 @@
 // 5. To attach to all inputs on a page:
 //      window.attachFilterToAllInputs()
 // 6. Secret override (dev tools only):
-//      window.__badwordOverride('FORGE-MASTER-2026')
 //
 // =============================================================================
 // NORMALIZATION PIPELINE
@@ -3505,7 +3508,6 @@
     "@rse",
     "ars3",
     "ar5e",
-    "ar$e",
     "4ss",
     "@ss",
     "a55",
@@ -4016,6 +4018,123 @@
     return false;
   }
 
+  // ===========================================================================
+  // REPORT-BASED LEARNING
+  // ===========================================================================
+  // The filter learns new words from user reports. Wire your site's
+  // "report" / "flag" button to badwordReport(text). The script extracts
+  // candidate words — unknown tokens that are not already blocked and not
+  // common English filler — and POSTs them to YOUR endpoint, configured
+  // once with badwordSetReportUrl(url). That endpoint tallies reports per
+  // word; once enough independent reports arrive, the word is added to
+  // the master list and baked into the next script release. Nothing is
+  // stored in the visitor's browser.
+  // ===========================================================================
+
+  // Lookup of every known word (severe + mild) for candidate extraction
+  var knownWordLookup = {};
+  var kwi;
+  for (kwi = 0; kwi < badWords.length; kwi++) {
+    knownWordLookup[normalize(badWords[kwi], false)] = true;
+    knownWordLookup[normalize(badWords[kwi], true)] = true;
+  }
+  for (kwi = 0; kwi < mildWords.length; kwi++) {
+    knownWordLookup[normalize(mildWords[kwi], false)] = true;
+    knownWordLookup[normalize(mildWords[kwi], true)] = true;
+  }
+
+  // Common English filler — never learned from reports
+  var learnStopwords = {
+    'this': true, 'that': true, 'with': true, 'from': true, 'they': true,
+    'them': true, 'there': true, 'their': true, 'these': true, 'those': true,
+    'have': true, 'been': true, 'were': true, 'about': true, 'which': true,
+    'when': true, 'what': true, 'would': true, 'could': true, 'should': true,
+    'just': true, 'like': true, 'some': true, 'then': true, 'than': true,
+    'more': true, 'most': true, 'other': true, 'over': true, 'also': true,
+    'after': true, 'before': true, 'while': true, 'because': true,
+    'very': true, 'much': true, 'here': true, 'where': true, 'want': true,
+    'know': true, 'need': true, 'make': true, 'take': true, 'come': true,
+    'going': true, 'getting': true, 'really': true, 'please': true,
+    'thanks': true, 'thank': true, 'hello': true, 'yeah': true, 'okay': true,
+    'message': true, 'text': true, 'time': true, 'today': true,
+    'everyone': true, 'people': true, 'person': true, 'never': true,
+    'always': true, 'again': true, 'stop': true, 'leave': true,
+    'start': true, 'think': true, 'said': true, 'says': true,
+    'saying': true, 'gonna': true, 'wanna': true, 'gotta': true,
+    'world': true, 'thing': true, 'things': true, 'doing': true,
+    'being': true, 'having': true, 'yours': true, 'will': true,
+    'cant': true, 'dont': true, 'doesnt': true, 'aint': true, 'isnt': true,
+    'arent': true, 'into': true, 'onto': true, 'upon': true, 'same': true,
+    'even': true, 'still': true, 'only': true, 'both': true, 'each': true,
+    'every': true, 'either': true, 'neither': true, 'else': true,
+    'ever': true, 'nothing': true, 'something': true, 'anything': true,
+    'everything': true, 'someone': true, 'anyone': true, 'myself': true,
+    'yourself': true, 'himself': true, 'herself': true
+  };
+
+  // Extracts up to 5 unknown candidate words from a reported message
+  function extractLearningCandidates(text) {
+    if (!text || typeof text !== 'string') {
+      return [];
+    }
+    var seen = {};
+    var out = [];
+    var streams = [normalizeContext(text, false), normalizeContext(text, true)];
+    for (var sIdx = 0; sIdx < streams.length; sIdx++) {
+      var tokens = streams[sIdx].split(' ');
+      for (var tIdx = 0; tIdx < tokens.length; tIdx++) {
+        var token = tokens[tIdx];
+        if (token.length < 4 || token.length > 24) {
+          continue;
+        }
+        if (seen[token]) {
+          continue;
+        }
+        seen[token] = true;
+        if (knownWordLookup[token] || mildLookup[token]) {
+          continue;
+        }
+        if (learnStopwords[token]) {
+          continue;
+        }
+        out.push(token);
+        if (out.length >= 5) {
+          return out;
+        }
+      }
+    }
+    return out;
+  }
+
+  var reportEndpoint = '';
+
+  function setReportUrl(url) {
+    reportEndpoint = String(url || '');
+  }
+
+  // Sends the unknown words of a flagged message to the report endpoint
+  function reportMessage(text) {
+    if (!reportEndpoint || !text || typeof text !== 'string') {
+      return;
+    }
+    try {
+      var words = extractLearningCandidates(text);
+      if (!words.length) {
+        return;
+      }
+      var payload = JSON.stringify({
+        words: words,
+        context: String(text).slice(0, 200)
+      });
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', reportEndpoint, true);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      xhr.send(payload);
+    } catch (err) {
+      // Reporting must never break the host page
+    }
+  }
+
   // Built once at load time and kept private — the console cannot reach,
   // replace, or neuter these references.
   var rawRegex = buildRegex(false);
@@ -4104,7 +4223,7 @@
     var now = Date.now();
     if (now - lastTick > 5000) {
       verifyIntegrity();
-      attachFilterToAllInputs();
+      attachSendGuards();
     }
     lastTick = now;
   }, 1000);
@@ -4185,7 +4304,7 @@
     title.textContent = 'PROFANITY DETECTED';
     var msg = document.createElement('div');
     msg.className = 'bw-msg';
-    msg.textContent = 'Your input contains prohibited language and has been removed.';
+    msg.textContent = 'Your message contains prohibited language and was not sent.';
     var btn = document.createElement('button');
     btn.className = 'bw-btn';
     btn.textContent = 'OK';
@@ -4229,31 +4348,61 @@
   }
 
   // ===========================================================================
-  // SHARED INPUT HANDLER
+  // SHARED SEND HANDLER
   // ===========================================================================
-  // A SINGLE function reference is attached to every field. This is the key
-  // to tamper-resistance: addEventListener ignores duplicate bindings of the
-  // same function, so the self-healing tick can safely re-attach to every
-  // field over and over. Removing a listener via dev tools is undone on the
-  // very next heal tick.
+  // The filter fires when a message is SENT, never while it is being typed
+  // (partial words on the way to a normal word — like "ar" while typing
+  // "are" — are never judged). Two send paths are covered, both in the
+  // CAPTURE phase so no page script can silently swallow the block:
+  //   1. form submit events — classic "send" / "post" buttons
+  //   2. Enter keypresses in text fields — chat apps without a form
+  // A SINGLE function reference guards each path. addEventListener ignores
+  // duplicate bindings of the same function, so the self-healing tick can
+  // safely re-attach over and over. Removing a listener via dev tools is
+  // undone on the very next heal tick.
   // ===========================================================================
 
-  function sharedHandler(e) {
-    if (_disabled) return;
-    var el = e.target || e.srcElement;
-    if (!el || !isTextField(el)) return;
-    var value = el.isContentEditable ? (el.textContent || '') : (el.value || '');
-    if (!value) return;
-    // PRIVATE closure reference — overriding window.containsBadWords has no
-    // effect on this call path
+  function fieldValue(el) {
+    return el.isContentEditable ? (el.textContent || '') : (el.value || '');
+  }
+
+  // PRIVATE closure reference — overriding window.containsBadWords has no
+  // effect on this call path
+  function checkAndBlockField(el) {
+    if (_disabled || !el || !isTextField(el)) return false;
+    var value = fieldValue(el);
+    if (!value) return false;
     if (containsBadWords(value)) {
       el.__bwViolationCount = (el.__bwViolationCount || 0) + 1;
-      if (el.isContentEditable) {
-        el.textContent = '';
-      } else {
-        el.value = '';
-      }
       showModal();
+      return true;
+    }
+    return false;
+  }
+
+  function submitHandler(e) {
+    if (_disabled) return;
+    var form = e.target;
+    if (!form || !form.querySelectorAll) return;
+    var fields = form.querySelectorAll('input, textarea, [contenteditable]');
+    for (var i = 0; i < fields.length; i++) {
+      if (checkAndBlockField(fields[i])) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+    }
+  }
+
+  function enterHandler(e) {
+    if (_disabled) return;
+    var key = e.key || '';
+    if (key !== 'Enter' && e.keyCode !== 13) return;
+    if (e.shiftKey) return; // Shift+Enter = newline, not a send
+    var el = e.target || e.srcElement;
+    if (checkAndBlockField(el)) {
+      e.preventDefault();
+      e.stopPropagation();
     }
   }
 
@@ -4261,58 +4410,44 @@
   // ATTACHMENT API
   // ===========================================================================
 
+  function attachSendGuards() {
+    if (!document.addEventListener) return;
+    // Capture phase: the block runs before any page submit handler
+    document.addEventListener('submit', submitHandler, true);
+    document.addEventListener('keydown', enterHandler, true);
+  }
+
+  // Legacy aliases — sites upgrading from older versions may still call
+  // these. The document-level guards already cover every field, so they
+  // simply ensure the guards are in place.
   function attachFilterToInput(el) {
-    if (!el || !el.addEventListener) return;
-    el.addEventListener('input', sharedHandler);
-    if (el.isContentEditable) {
-      el.addEventListener('blur', sharedHandler);
-    }
+    attachSendGuards();
   }
 
   function attachFilterToAllInputs() {
-    var list = document.querySelectorAll('input, textarea, [contenteditable]');
-    for (var i = 0; i < list.length; i++) {
-      attachFilterToInput(list[i]);
-    }
+    attachSendGuards();
   }
 
   // ===========================================================================
-  // AUTO-ATTACH ON LOAD + SELF-HEALING OBSERVER
+  // AUTO-ATTACH ON LOAD + SELF-HEALING
   // ===========================================================================
-  // Attach to all existing fields once the DOM is ready, then keep a
-  // MutationObserver on the document so dynamically added fields (SPA
-  // routes, chat widgets, comment forms) are filtered the instant they
-  // appear. A periodic heal tick re-attaches everything and re-verifies
-  // integrity — idempotent by design.
+  // The send guards live on the document itself in the capture phase, so
+  // fields added later (SPA routes, chat widgets, comment forms) are
+  // covered automatically — no per-field listeners needed. A periodic
+  // heal tick re-attaches the guards and re-verifies integrity —
+  // idempotent by design.
   // ===========================================================================
-
-  function startObserver() {
-    if (!window.MutationObserver) return;
-    var target = document.documentElement || document.body;
-    if (!target) {
-      setTimeout(startObserver, 50);
-      return;
-    }
-    var mo = new MutationObserver(function () {
-      attachFilterToAllInputs();
-    });
-    mo.observe(target, { childList: true, subtree: true });
-  }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function () {
-      attachFilterToAllInputs();
-      startObserver();
-    });
+    document.addEventListener('DOMContentLoaded', attachSendGuards);
   } else {
-    attachFilterToAllInputs();
-    startObserver();
+    attachSendGuards();
   }
 
-  // Periodic self-healing: re-verify the word list, re-attach all listeners
+  // Periodic self-healing: re-verify the word list, re-attach the guards
   setInterval(function () {
     verifyIntegrity();
-    attachFilterToAllInputs();
+    attachSendGuards();
   }, 1500);
 
   // ===========================================================================
@@ -4339,6 +4474,8 @@
   expose('containsBadWords', containsBadWords);
   expose('attachFilterToInput', attachFilterToInput);
   expose('attachFilterToAllInputs', attachFilterToAllInputs);
+  expose('badwordSetReportUrl', setReportUrl);
+  expose('badwordReport', reportMessage);
 
   // Belt-and-suspenders: if the globals were somehow swapped (older browsers,
   // pre-existing writable properties), restore them every few seconds.
@@ -4359,8 +4496,8 @@
   //   3. Anti-debug timer — pause-and-tamper reverted on resume
   //   4. Frozen API — globals cannot be reassigned
   //   5. Self-healing — removed listeners re-attached within 1.5s
-  //   6. MutationObserver — dynamic fields filtered on arrival
+  //   6. Send guards — dynamically added fields covered automatically
   //   7. Secret override — the only disable path:
-  //        window.__badwordOverride('FORGE-MASTER-2026')
+
   // ===========================================================================
 })();
